@@ -50,6 +50,7 @@ detect_pkg_manager() {
 
 repair_legacy_apt_sources() {
   local files=()
+  local source_files=()
   local changed=0
 
   [[ -f /etc/apt/sources.list ]] && files+=("/etc/apt/sources.list")
@@ -57,13 +58,18 @@ repair_legacy_apt_sources() {
     while IFS= read -r -d '' f; do
       files+=("$f")
     done < <(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.list' -print0 2>/dev/null)
+
+    while IFS= read -r -d '' f; do
+      source_files+=("$f")
+    done < <(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.sources' -print0 2>/dev/null)
   fi
 
   for f in "${files[@]}"; do
-    if grep -Eq 'security\.debian\.org[[:space:]]+bullseye/updates' "$f"; then
+    if grep -Eq 'security\.debian\.org(/debian-security)?/?[[:space:]]+bullseye/updates' "$f"; then
       log "修复旧安全源配置: $f"
       run_as_root sed -i -E \
-        's|security\.debian\.org[[:space:]]+bullseye/updates|security.debian.org/debian-security bullseye-security|g' \
+        -e '/security\.debian\.org.*bullseye\/updates/ s|security\.debian\.org(/debian-security)?/?|security.debian.org/debian-security|g' \
+        -e '/security\.debian\.org.*bullseye\/updates/ s|bullseye/updates|bullseye-security|g' \
         "$f"
       changed=1
     fi
@@ -72,6 +78,24 @@ repair_legacy_apt_sources() {
       log "禁用失效的 bullseye-backports 源: $f"
       run_as_root sed -i -E \
         '/^[[:space:]]*deb(-src)?[[:space:]].*bullseye-backports/s/^/# /' \
+        "$f"
+      changed=1
+    fi
+  done
+
+  for f in "${source_files[@]}"; do
+    if grep -Eq '^[[:space:]]*Suites:[[:space:]]*bullseye/updates([[:space:]]|$)' "$f"; then
+      log "修复 deb822 安全源 Suites: $f"
+      run_as_root sed -i -E \
+        's|^([[:space:]]*Suites:[[:space:]]*)bullseye/updates([[:space:]]|$)|\1bullseye-security\2|g' \
+        "$f"
+      changed=1
+    fi
+
+    if grep -Eq '^[[:space:]]*URIs:[[:space:]]*https?://security\.debian\.org/?[[:space:]]*$' "$f"; then
+      log "修复 deb822 安全源 URI: $f"
+      run_as_root sed -i -E \
+        's|^([[:space:]]*URIs:[[:space:]]*https?://security\.debian\.org)/?[[:space:]]*$|\1/debian-security|g' \
         "$f"
       changed=1
     fi
@@ -90,6 +114,17 @@ apt_update_with_retry() {
 
   warn "apt update 失败，尝试修复 Debian 旧源配置后重试..."
   if repair_legacy_apt_sources; then
+    if run_as_root apt-get update; then
+      return 0
+    fi
+  fi
+
+  # 最后兜底：确保存在可用的 bullseye-security 源
+  if [[ -d /etc/apt/sources.list.d ]]; then
+    warn "自动修复未完全生效，写入兜底安全源后重试..."
+    run_as_root sh -c 'cat > /etc/apt/sources.list.d/99-bullseye-security-fix.list << "EOF"
+deb http://security.debian.org/debian-security bullseye-security main
+EOF'
     if run_as_root apt-get update; then
       return 0
     fi
