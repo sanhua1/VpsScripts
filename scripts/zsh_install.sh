@@ -65,11 +65,10 @@ repair_legacy_apt_sources() {
   fi
 
   for f in "${files[@]}"; do
-    if grep -Eq 'security\.debian\.org(/debian-security)?/?[[:space:]]+bullseye/updates' "$f"; then
-      log "修复旧安全源配置: $f"
+    if grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*bullseye/updates([[:space:]]|$)' "$f"; then
+      log "禁用失效的 bullseye/updates 源: $f"
       run_as_root sed -i -E \
-        -e '/security\.debian\.org.*bullseye\/updates/ s|security\.debian\.org(/debian-security)?/?|security.debian.org/debian-security|g' \
-        -e '/security\.debian\.org.*bullseye\/updates/ s|bullseye/updates|bullseye-security|g' \
+        '/^[[:space:]]*deb(-src)?[[:space:]].*bullseye\/updates([[:space:]]|$)/s/^/# /' \
         "$f"
       changed=1
     fi
@@ -88,6 +87,14 @@ repair_legacy_apt_sources() {
       log "修复 deb822 安全源 Suites: $f"
       run_as_root sed -i -E \
         's|^([[:space:]]*Suites:[[:space:]]*)bullseye/updates([[:space:]]|$)|\1bullseye-security\2|g' \
+        "$f"
+      changed=1
+    fi
+
+    if grep -Eq '^[[:space:]]*Suites:[[:space:]].*bullseye/updates' "$f"; then
+      log "替换 deb822 中残留的 bullseye/updates: $f"
+      run_as_root sed -i -E \
+        's|bullseye/updates|bullseye-security|g' \
         "$f"
       changed=1
     fi
@@ -119,15 +126,18 @@ apt_update_with_retry() {
     fi
   fi
 
-  # 最后兜底：确保存在可用的 bullseye-security 源
-  if [[ -d /etc/apt/sources.list.d ]]; then
-    warn "自动修复未完全生效，写入兜底安全源后重试..."
-    run_as_root sh -c 'cat > /etc/apt/sources.list.d/99-bullseye-security-fix.list << "EOF"
+  # 最后兜底：强制注释所有 bullseye/updates 并写入可用安全源
+  warn "自动修复未完全生效，执行兜底安全源修复后重试..."
+  run_as_root mkdir -p /etc/apt/sources.list.d
+  run_as_root sh -c 'for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+    [ -f "$f" ] || continue
+    sed -i -E "/^[[:space:]]*deb(-src)?[[:space:]].*bullseye\/updates([[:space:]]|$)/s/^/# /" "$f"
+  done'
+  run_as_root sh -c 'cat > /etc/apt/sources.list.d/99-bullseye-security-fix.list << "EOF"
 deb http://security.debian.org/debian-security bullseye-security main
 EOF'
-    if run_as_root apt-get update; then
-      return 0
-    fi
+  if run_as_root apt-get update; then
+    return 0
   fi
 
   die "apt update 仍失败，请检查 /etc/apt/sources.list* 源配置。"
