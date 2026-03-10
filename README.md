@@ -1,5 +1,10 @@
 # 自用脚本归档
 
+## 一键部署（zsh）
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sanhua1/VpsScripts/main/scripts/zsh_install.sh)
+```
+
 ## 融合怪
 ```bash
 curl -L https://gitlab.com/spiritysdx/za/-/raw/main/ecs.sh -o ecs.sh && chmod +x ecs.sh && bash ecs.sh
