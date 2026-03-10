@@ -48,12 +48,62 @@ detect_pkg_manager() {
   die "不支持的系统：未找到 apt/dnf/yum/pacman。"
 }
 
+repair_legacy_apt_sources() {
+  local files=()
+  local changed=0
+
+  [[ -f /etc/apt/sources.list ]] && files+=("/etc/apt/sources.list")
+  if [[ -d /etc/apt/sources.list.d ]]; then
+    while IFS= read -r -d '' f; do
+      files+=("$f")
+    done < <(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.list' -print0 2>/dev/null)
+  fi
+
+  for f in "${files[@]}"; do
+    if grep -Eq 'security\.debian\.org[[:space:]]+bullseye/updates' "$f"; then
+      log "修复旧安全源配置: $f"
+      run_as_root sed -i -E \
+        's|security\.debian\.org[[:space:]]+bullseye/updates|security.debian.org/debian-security bullseye-security|g' \
+        "$f"
+      changed=1
+    fi
+
+    if grep -Eq 'bullseye-backports' "$f"; then
+      log "禁用失效的 bullseye-backports 源: $f"
+      run_as_root sed -i -E \
+        '/^[[:space:]]*deb(-src)?[[:space:]].*bullseye-backports/s/^/# /' \
+        "$f"
+      changed=1
+    fi
+  done
+
+  if [[ "$changed" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+apt_update_with_retry() {
+  if run_as_root apt-get update; then
+    return 0
+  fi
+
+  warn "apt update 失败，尝试修复 Debian 旧源配置后重试..."
+  if repair_legacy_apt_sources; then
+    if run_as_root apt-get update; then
+      return 0
+    fi
+  fi
+
+  die "apt update 仍失败，请检查 /etc/apt/sources.list* 源配置。"
+}
+
 install_base_packages() {
   local pm="$1"
   log "检测到包管理器: $pm"
   case "$pm" in
     apt)
-      run_as_root apt-get update
+      apt_update_with_retry
       run_as_root apt-get install -y zsh curl git
       ;;
     dnf)
